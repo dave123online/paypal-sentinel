@@ -56,8 +56,8 @@ def env(monkeypatch):
     return TestClient(m.app), fake
 
 
-def _order(c, amount):
-    r = c.post("/paypal/orders", json={"amount": amount, "invoice_id": "INV-1"})
+def _order(c, amount, **extra):
+    r = c.post("/paypal/orders", json={"amount": amount, "invoice_id": "INV-1", **extra})
     assert r.status_code == 200 and "approve_url" in r.json()
     return r.json()["order_id"]
 
@@ -150,3 +150,23 @@ def test_simulated_source(env):
     assert r["verdict"]["source"] == "simulated"
     wh = {"id": "W", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {"id": "C9", "amount": {"value": "5", "currency_code": "EUR"}}}
     assert c.post("/webhooks/paypal", json=wh).json()["verdict"]["source"] == "simulated"  # signature non vérifiée
+
+
+def test_webhook_flow_honors_hold_given_at_creation(env):
+    """--hold : le webhook autorise avant l'Entrée, Shield doit quand même retenir."""
+    c, fake = env
+    oid = _order(c, 500, signals={"recent_micro_payments": 8})
+    wh = {"id": "WH10", "event_type": "CHECKOUT.ORDER.APPROVED", "resource": {"id": oid}}
+    r = c.post("/webhooks/paypal", json=wh).json()
+    assert r["verdict"]["action_taken"] == "held"
+    assert not fake.captured()  # fonds retenus, rien de capturé
+
+
+def test_webhook_flow_honors_decline_given_at_creation(env):
+    """--decline : le refus simulé doit s'appliquer à l'autorisation lancée par le webhook."""
+    c, _ = env
+    oid = _order(c, 80, authorize_mock="INSTRUMENT_DECLINED")
+    wh = {"id": "WH11", "event_type": "CHECKOUT.ORDER.APPROVED", "resource": {"id": oid}}
+    r = c.post("/webhooks/paypal", json=wh).json()
+    assert r["paypal"]["status"] == "DECLINED"
+    assert r["verdict"]["action_taken"] == "alerted"

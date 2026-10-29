@@ -191,6 +191,8 @@ class OrderRequest(BaseModel):
     description: Optional[str] = None
     invoice_id: Optional[str] = None
     mock: Optional[str] = None  # negative testing sandbox (ex. DUPLICATE_INVOICE_ID)
+    signals: Optional[dict] = None         # contexte de risque simulé, mémorisé jusqu'à l'autorisation (sandbox)
+    authorize_mock: Optional[str] = None   # negative testing appliqué à l'autorisation (ex. INSTRUMENT_DECLINED)
 
 
 class AuthorizeRequest(BaseModel):
@@ -205,13 +207,18 @@ def _raise_http(e: PayPalError, status: int = 502):
 @app.post("/paypal/orders")
 async def create_paypal_order(req: OrderRequest):
     """Étape 1 : crée un order Sandbox (intent=AUTHORIZE). Le buyer l'approuve via approve_url."""
+    if (req.signals or req.authorize_mock) and get_settings().paypal_environment.lower() != "sandbox":
+        raise HTTPException(status_code=400, detail="signals / authorize_mock autorisés uniquement en sandbox")
     try:
         order = await paypal_client.create_order(
             req.amount, req.currency, req.description, req.invoice_id, mock=req.mock
         )
     except PayPalError as e:
         _raise_http(e, 422 if e.status == 422 else 502)
-    pending_orders[order["order_id"]] = {"amount": req.amount, "currency": req.currency}
+    pending_orders[order["order_id"]] = {
+        "amount": req.amount, "currency": req.currency,
+        "signals": req.signals, "authorize_mock": req.authorize_mock,
+    }
     return order
 
 
@@ -220,17 +227,20 @@ async def authorize_and_analyze(order_id: str, mock: Optional[str] = None, signa
     order = pending_orders.pop(order_id, None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order inconnu ou déjà traité")
-    handled_order_ids.add(order_id)
     if signals and get_settings().paypal_environment.lower() != "sandbox":
         pending_orders[order_id] = order
         raise HTTPException(status_code=400, detail="signals autorisés uniquement en sandbox")
-    extra = {"source": "paypal_sandbox", "order_id": order_id, **(signals or {})}
+    handled_order_ids.add(order_id)
+    # Mémorisés à la création de l'order : valables aussi quand c'est un webhook qui autorise.
+    mock = mock or order.get("authorize_mock")
+    extra = {"source": "paypal_sandbox", "order_id": order_id, **(order.get("signals") or {}), **(signals or {})}
 
     try:
         auth = await paypal_client.authorize_order(order_id, mock=mock)
     except PayPalError as e:
         if e.status != 422 or e.issue == "ORDER_NOT_APPROVED":
             pending_orders[order_id] = order  # l'acheteur n'a pas encore approuvé : on peut réessayer
+            handled_order_ids.discard(order_id)
             _raise_http(e, 409 if e.issue == "ORDER_NOT_APPROVED" else 502)
         # Refus PayPal (ex. INSTRUMENT_DECLINED) : Shield alerte le marchand
         event = TransactionEvent(
@@ -388,4 +398,3 @@ async def dashboard():
 
 
 app.mount("/dashboard/src", StaticFiles(directory=DASHBOARD_DIR / "src"), name="dashboard-src")
-
