@@ -1,0 +1,11 @@
+{
+  "event_type": "CUSTOMER.DISPUTE.CREATED",
+  "transaction_id": "TX_FRIENDLY_FRAUD_001",
+  "amount": 120,
+  "currency": "EUR",
+  "buyer_email": "buyer@example.com",
+  "raw_payload": {
+    "tracking_delivered": true,
+    "dispute_reason": "ITEM_NOT_RECEIVED"
+  }
+}

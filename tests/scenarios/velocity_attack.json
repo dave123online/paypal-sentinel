@@ -1,0 +1,11 @@
+{
+  "event_type": "PAYMENT.CAPTURE.COMPLETED",
+  "transaction_id": "TX_VELOCITY_001",
+  "amount": 500,
+  "currency": "EUR",
+  "buyer_email": "suspicious-buyer@example.com",
+  "buyer_country": "FR",
+  "raw_payload": {
+    "recent_micro_payments": 8
+  }
+}

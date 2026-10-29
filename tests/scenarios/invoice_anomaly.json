@@ -1,0 +1,11 @@
+{
+  "event_type": "INVOICING.INVOICE.PAID",
+  "transaction_id": "TX_INVOICE_ANOMALY_001",
+  "amount": 4500,
+  "currency": "EUR",
+  "seller_email": "merchant@example.com",
+  "raw_payload": {
+    "average_invoice_amount": 1200,
+    "new_payee": true
+  }
+}
