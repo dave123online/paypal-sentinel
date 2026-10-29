@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     paypal_webhook_id: str = ""
 
     google_api_key: str = ""
-    google_model: str = "gemini-3.5-flash-lite"   # ← mis à jour
+    google_model: str = "gemini-3.5-flash-lite"
 
     app_base_url: str = "http://127.0.0.1:8000"   # URL publique (return_url PayPal)
 

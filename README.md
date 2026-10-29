@@ -1,12 +1,14 @@
 # 🛡️ PayPal Sentinel
 
+**Démo en ligne :** https://paypal-sentinel.onrender.com (dashboard : `/dashboard`, docs API : `/docs`) · PayPal **Sandbox**, aucun argent réel.
+
 Agent IA de protection et de croissance pour marchands PayPal : **Shield** détecte la fraude avec des règles déterministes, **Gemini** l'explique avec empathie, **Ally** propose la prochaine action business.
 
 ## Problème résolu
 Les petits marchands subissent fraude par cartes test, faux litiges (friendly fraud) et anomalies de factures, sans outil clair ni rassurant. Sentinel retient la transaction, explique pourquoi en langage humain et laisse le marchand décider.
 
 ## Vision
-- **Shield** (protection, transparence, contrôle) : règles déterministes (velocity attack, friendly fraud, anomalie de facture). Gemini ne décide jamais : il explique avec empathie. Une transaction normale n'appelle pas Gemini et n'apparaît pas dans le feed. Chaque alerte a un bouton **Unlock and validate** (le marchand a le dernier mot, capture PayPal simulée).
+- **Shield** (protection, transparence, contrôle) : règles déterministes (velocity attack, friendly fraud, anomalie de facture). Gemini ne décide jamais : il explique avec empathie. Une transaction normale n'appelle pas Gemini et n'apparaît pas dans le feed. Chaque alerte a un bouton **Unlock and validate** (le marchand a le dernier mot : capture PayPal Sandbox réelle quand l'autorisation vient d'un vrai order, simulée pour les transactions de démo).
 - **Ally** (CFO virtuel, découplé de Shield, jamais de fraude) : analyse les 30 dernières transactions. Quatre compétences : rétention/churn, upsell, survie de trésorerie (dry spell), factures impayées/opérationnel. Throttlé (une analyse toutes les 3 transactions) et dédupliqué. Bouton **Mark as read**.
 - **Command Center** : KPI (argent protégé, alertes actives, transactions analysées, opportunités Ally), feeds Shield/Ally, tables AG Grid avec modales, statut Gemini (cache 60 s).
 
@@ -88,7 +90,7 @@ Vérifie ensuite le paiement dans l'activité du compte Business sur www.sandbox
 ## Déploiement Render
 - Build : `pip install -r requirements.txt`
 - Start : `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Variables : `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENVIRONMENT`, `PAYPAL_WEBHOOK_ID`, `GOOGLE_API_KEY`, `GOOGLE_MODEL`
+- Variables : `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENVIRONMENT`, `PAYPAL_WEBHOOK_ID`, `GOOGLE_API_KEY`, `GOOGLE_MODEL`, `APP_BASE_URL` (URL publique Render, utilisée comme `return_url` PayPal)
 
 ## Licence
 MIT — voir `LICENSE`.

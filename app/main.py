@@ -388,3 +388,4 @@ async def dashboard():
 
 
 app.mount("/dashboard/src", StaticFiles(directory=DASHBOARD_DIR / "src"), name="dashboard-src")
+

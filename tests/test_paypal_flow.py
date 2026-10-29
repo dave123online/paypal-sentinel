@@ -11,7 +11,7 @@ def _reset():
         d.clear()
     for l in (m.shield_verdicts, m.ally_suggestions, m.transaction_history):
         l.clear()
-    for st in (m.seen_ally_titles, m.seen_ally_actions, m.known_capture_ids):
+    for st in (m.seen_ally_titles, m.seen_ally_actions, m.known_capture_ids, m.handled_order_ids):
         st.clear()
 
 
@@ -120,6 +120,27 @@ def test_webhook_flow_and_no_double_count(env):
     back = {"id": "WH2", "event_type": "PAYMENT.CAPTURE.COMPLETED",
             "resource": {"id": "CAP1", "amount": {"value": "49.90", "currency_code": "EUR"}}}
     assert c.post("/webhooks/paypal", json=back).json()["status"] == "ignored"
+    assert len(m.transaction_history) == 1
+
+
+def test_late_webhooks_for_api_processed_payment_are_ignored(env):
+    """Autorisation, order déjà traité et capture liée : aucun doublon dans l'historique."""
+    c, fake = env
+    oid = _order(c, 49.9)
+    assert c.post(f"/paypal/orders/{oid}/authorize").json()["verdict"]["action_taken"] == "approved"
+    assert len(m.transaction_history) == 1
+
+    late = [
+        {"id": "W1", "event_type": "PAYMENT.AUTHORIZATION.CREATED",
+         "resource": {"id": "AUTH1", "amount": {"value": "49.90", "currency_code": "EUR"}}},
+        {"id": "W2", "event_type": "CHECKOUT.ORDER.APPROVED",
+         "resource": {"id": oid, "purchase_units": [{"amount": {"value": "49.90", "currency_code": "EUR"}}]}},
+        {"id": "W3", "event_type": "PAYMENT.CAPTURE.COMPLETED",
+         "resource": {"id": "CAP_OTHER", "amount": {"value": "49.90", "currency_code": "EUR"},
+                      "supplementary_data": {"related_ids": {"order_id": oid, "authorization_id": "AUTH1"}}}},
+    ]
+    for wh in late:
+        assert c.post("/webhooks/paypal", json=wh).json()["status"] == "ignored"
     assert len(m.transaction_history) == 1
 
 
