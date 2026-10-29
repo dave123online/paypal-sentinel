@@ -42,6 +42,7 @@ _paypal_health_cache = {"ok": False, "error": None, "last_check": 0}
 pending_orders: dict[str, dict] = {}   # order_id -> {amount, currency} en attente d'approbation buyer
 paypal_refs: dict[str, dict] = {}      # authorization_id -> {order_id, status, currency}
 known_capture_ids: set[str] = set()    # captures faites par nous (le webhook retour est ignoré)
+handled_order_ids: set[str] = set()    # orders déjà traités par l'API (les webhooks liés sont ignorés)
 
 
 def get_merchant_state(merchant_id: str = DEFAULT_MERCHANT_ID) -> MerchantState:
@@ -219,6 +220,7 @@ async def authorize_and_analyze(order_id: str, mock: Optional[str] = None, signa
     order = pending_orders.pop(order_id, None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order inconnu ou déjà traité")
+    handled_order_ids.add(order_id)
     if signals and get_settings().paypal_environment.lower() != "sandbox":
         pending_orders[order_id] = order
         raise HTTPException(status_code=400, detail="signals autorisés uniquement en sandbox")
@@ -295,9 +297,14 @@ async def paypal_webhook(request: Request):
     # L'acheteur vient d'approuver un order créé par Sentinel : on autorise, Shield décide.
     if event_type == "CHECKOUT.ORDER.APPROVED" and resource_id in pending_orders:
         return await authorize_and_analyze(resource_id)
-    # Webhook retour d'une capture déjà traitée via l'API : on ne la compte pas deux fois.
-    if event_type.startswith("PAYMENT.CAPTURE") and resource_id in known_capture_ids:
-        return {"status": "ignored", "reason": "capture already processed via API"}
+    # Webhook retour d'un paiement déjà traité via l'API (order, autorisation ou capture) :
+    # on ne le compte pas deux fois. On compare tous les identifiants liés au paiement.
+    resource = payload.get("resource") or {}
+    related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+    ids = {resource_id, related.get("order_id"), related.get("authorization_id")} - {None}
+    ours = handled_order_ids | set(paypal_refs) | known_capture_ids
+    if event_type.startswith(("PAYMENT.", "CHECKOUT.ORDER")) and ids & ours:
+        return {"status": "ignored", "reason": "already processed via API"}
 
     event = parse_paypal_event(payload)
     # "paypal_webhook" seulement si la signature a été vérifiée ; sinon c'est une simulation.
