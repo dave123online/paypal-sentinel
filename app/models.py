@@ -33,6 +33,7 @@ class ShieldVerdict(BaseModel):
     confidence: float = Field(ge=0, le=1, default=0.9)
     explanation_for_merchant: str
     source: Source = "simulated"
+    acknowledged: bool = False   # alerte prise en compte par le marchand (sans capture)
     timestamp: datetime = Field(default_factory=_now)
 
 class AllySuggestion(BaseModel):

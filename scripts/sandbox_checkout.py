@@ -6,6 +6,10 @@ import sys
 import uuid
 import time
 import httpx
+import os as _os
+
+# Si la démo est protégée par ADMIN_TOKEN : export SENTINEL_ADMIN_TOKEN=...
+ADMIN_HEADERS = {"X-Admin-Token": _os.getenv("SENTINEL_ADMIN_TOKEN", "")} if _os.getenv("SENTINEL_ADMIN_TOKEN") else {}
 
 BASE_URL = os.getenv("SENTINEL_URL", "https://paypal-sentinel.onrender.com")
 
@@ -18,11 +22,14 @@ def main() -> int:
     ap.add_argument("--amount", type=float, default=49.90)
     ap.add_argument("--currency", default="EUR")
     ap.add_argument("--hold", action="store_true", help="simule un contexte de risque (velocity)")
+    ap.add_argument("--block", action="store_true", help="rafale de tests de carte : Shield bloque et annule (void) l'autorisation")
     ap.add_argument("--decline", action="store_true", help="force INSTRUMENT_DECLINED")
     ap.add_argument("--dup-invoice", action="store_true", help="force DUPLICATE_INVOICE_ID")
     args = ap.parse_args()
+    if args.block and args.amount < 300:
+        args.amount = 500.0  # la règle de blocage exige un montant >= 300 €
 
-    with httpx.Client(base_url=BASE_URL, timeout=60) as c:
+    with httpx.Client(base_url=BASE_URL, timeout=60, headers=ADMIN_HEADERS) as c:
         invoice = f"SENTINEL-{uuid.uuid4().hex[:8]}"
         body = {
             "amount": args.amount,
@@ -39,6 +46,8 @@ def main() -> int:
             body["authorize_mock"] = "INSTRUMENT_DECLINED"
         if args.hold:
             body["signals"] = {"recent_micro_payments": 8}
+        if args.block:
+            body["signals"] = {"recent_micro_payments": 20}
 
         r = c.post("/paypal/orders", json=body)
         

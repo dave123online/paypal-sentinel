@@ -80,6 +80,7 @@ Prérequis : Client ID/Secret Sandbox dans `.env`, serveur lancé, un compte San
 python scripts/sandbox_checkout.py                      # paiement normal -> capturé automatiquement
 python scripts/sandbox_checkout.py --amount 500 --hold  # Shield retient -> "Unlock" = vraie capture
 python scripts/sandbox_checkout.py --decline            # INSTRUMENT_DECLINED -> alerte Shield
+python scripts/sandbox_checkout.py --block              # rafale de tests de carte -> blocked, autorisation annulée (void)
 python scripts/sandbox_checkout.py --dup-invoice        # DUPLICATE_INVOICE_ID
 ```
 Vérifie ensuite le paiement dans l'activité du compte Business sur www.sandbox.paypal.com.
@@ -91,6 +92,13 @@ Vérifie ensuite le paiement dans l'activité du compte Business sur www.sandbox
 - Build : `pip install -r requirements.txt`
 - Start : `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Variables : `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENVIRONMENT`, `PAYPAL_WEBHOOK_ID`, `GOOGLE_API_KEY`, `GOOGLE_MODEL`, `APP_BASE_URL` (URL publique Render, utilisée comme `return_url` PayPal)
+
+## Limites et choix de conception (à lire avant de juger)
+- **Signaux de risque simulés.** PayPal ne fournit pas `recent_micro_payments`, `tracking_delivered` ni `average_invoice_amount`. Sentinel démontre une architecture de décision qui *peut* exploiter ces signaux ; en démo ils viennent des scénarios (`tests/scenarios`) ou de `signals` (sandbox uniquement). Les badges « PayPal Sandbox / Webhook / Simulé » montrent ce qui est réel.
+- **Quatre états Shield, tous testés :** `approved` (capture), `held` (autorisation gardée, le marchand peut capturer), `alerted` (refus PayPal ou litige : rien à capturer, le marchand acquitte), `blocked` (rafale de 15+ micro-paiements avant un montant ≥ 300 € : l'autorisation est annulée par void et ne peut plus être débloquée).
+- **KPI « Montant retenu / bloqué ».** Somme des montants des transactions retenues ou bloquées : c'est l'exposition traitée, pas une perte évitée mesurée. Même logique pour « impact estimé » d'Ally : heuristique (valeur de panier, factures impayées), jamais un résultat observé.
+- **Sécurité de la démo hébergée.** Définir `ADMIN_TOKEN` protège les routes qui modifient l'état (`/simulate/*`, `/paypal/orders*`, validations, et le webhook quand `PAYPAL_WEBHOOK_ID` est vide). Le dashboard (lecture) reste public ; les boutons demandent le token une fois par session. Les scripts le lisent dans `SENTINEL_ADMIN_TOKEN`. Les webhooks PayPal sont protégés par la vérification de signature. Version de démonstration : stockage en mémoire, un seul marchand, pas d'authentification utilisateur. Ne pas la déployer telle quelle pour de vrais marchands.
+- **Données envoyées à l'IA.** Gemini ne reçoit ni e-mail acheteur ni prénom : les clients sont remplacés par un identifiant dérivé non réversible (`Customer-xxxxxx`), remis en prénom localement dans l'interface. Seuls les montants, dates et statuts nécessaires à la recommandation sont transmis.
 
 ## Licence
 MIT — voir `LICENSE`.

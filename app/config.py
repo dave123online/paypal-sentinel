@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     google_model: str = "gemini-3.5-flash-lite"
 
+    admin_token: str = ""   # protège les routes qui modifient l'état (vide = ouvert, dev local uniquement)
     app_base_url: str = "http://127.0.0.1:8000"   # URL publique (return_url PayPal)
 
     host: str = "0.0.0.0"

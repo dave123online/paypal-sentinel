@@ -4,7 +4,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+import secrets
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,7 +24,24 @@ log = logging.getLogger("sentinel")
 BASE_DIR = Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = BASE_DIR / "dashboard"
 
-app = FastAPI(title="PayPal Sentinel", version="0.3.0")
+app = FastAPI(title="PayPal Sentinel", version="0.4.0")
+
+
+def _check_admin(token: Optional[str]) -> None:
+    expected = get_settings().admin_token
+    if expected and not (token and secrets.compare_digest(token, expected)):
+        raise HTTPException(status_code=401, detail="Admin token required")
+
+
+async def require_admin(x_admin_token: Optional[str] = Header(default=None)) -> None:
+    """Protège les routes qui modifient l'état (simulation, orders, validations)."""
+    _check_admin(x_admin_token)
+
+
+if not get_settings().admin_token:
+    logging.getLogger("sentinel").warning(
+        "ADMIN_TOKEN non défini : routes de modification ouvertes (acceptable en local, pas en ligne)."
+    )
 
 ALLY_EVERY_N = 3  # Ally est "throttlé" : une analyse toutes les N transactions
 
@@ -149,17 +168,18 @@ async def merchant_state_view():
     return {
         **state.model_dump(mode="json"),
         "transactions_analyzed": len(transaction_history),
-        "active_alerts": sum(1 for v in shield_verdicts if v.action_taken != "approved"),
+        "amount_held_or_blocked": state.money_saved_by_shield,  # exposition traitée, pas une perte évitée mesurée
+        "active_alerts": sum(1 for v in shield_verdicts if v.action_taken != "approved" and not v.acknowledged),
         "ally_opportunities": len(ally_suggestions),
     }
 
 
-@app.post("/simulate/transaction")
+@app.post("/simulate/transaction", dependencies=[Depends(require_admin)])
 async def simulate_transaction(event: TransactionEvent):
     return await process_event(event)
 
 
-@app.post("/simulate/stress")
+@app.post("/simulate/stress", dependencies=[Depends(require_admin)])
 async def simulate_financial_stress(payload: dict):
     """Injecte du stress financier (factures impayées) et force une suggestion Ally de survie."""
     state = get_merchant_state()
@@ -204,7 +224,7 @@ def _raise_http(e: PayPalError, status: int = 502):
     raise HTTPException(status_code=status, detail=e.to_dict())
 
 
-@app.post("/paypal/orders")
+@app.post("/paypal/orders", dependencies=[Depends(require_admin)])
 async def create_paypal_order(req: OrderRequest):
     """Étape 1 : crée un order Sandbox (intent=AUTHORIZE). Le buyer l'approuve via approve_url."""
     if (req.signals or req.authorize_mock) and get_settings().paypal_environment.lower() != "sandbox":
@@ -280,7 +300,7 @@ async def authorize_and_analyze(order_id: str, mock: Optional[str] = None, signa
     return {**result, "paypal": paypal}
 
 
-@app.post("/paypal/orders/{order_id}/authorize")
+@app.post("/paypal/orders/{order_id}/authorize", dependencies=[Depends(require_admin)])
 async def authorize_paypal_order(order_id: str, req: Optional[AuthorizeRequest] = None):
     req = req or AuthorizeRequest()
     return await authorize_and_analyze(order_id, mock=req.mock, signals=req.signals)
@@ -292,6 +312,8 @@ async def paypal_webhook(request: Request):
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not get_settings().paypal_webhook_id:
+        _check_admin(request.headers.get("x-admin-token"))  # pas de signature à vérifier : on protège autrement
     if get_settings().paypal_webhook_id:
         try:
             ok = await paypal_client.verify_webhook_signature(request.headers, payload)
@@ -322,7 +344,7 @@ async def paypal_webhook(request: Request):
     return await process_event(event)
 
 
-@app.post("/shield/approve/{transaction_id}")
+@app.post("/shield/approve/{transaction_id}", dependencies=[Depends(require_admin)])
 async def approve_shield(transaction_id: str):
     """Human-in-the-loop : le marchand débloque et valide. Capture réelle si l'autorisation vient du sandbox."""
     state = get_merchant_state()
@@ -333,10 +355,12 @@ async def approve_shield(transaction_id: str):
     )
     if verdict is None:
         raise HTTPException(status_code=404, detail="Verdict introuvable ou déjà résolu")
+    if verdict.action_taken != "held":
+        # Rien à capturer : refus PayPal, litige à contester ou autorisation annulée (void).
+        raise HTTPException(status_code=409, detail="Nothing to unlock for this alert: use /shield/acknowledge")
 
     event = next((e for e in reversed(transaction_history) if e.transaction_id == transaction_id), None)
-    was_held = verdict.action_taken in ("held", "blocked")
-    was_alerted = verdict.action_taken == "alerted"
+    was_held = True  # seuls les verdicts "held" arrivent ici
 
     capture = None
     if was_held and event:
@@ -365,15 +389,31 @@ async def approve_shield(transaction_id: str):
         state.money_saved_by_shield = max(0.0, state.money_saved_by_shield - event.amount)
         log.info("✅ Capture %s: %s %.2f %s", "simulée" if capture["simulated"] else "RÉELLE",
                  transaction_id, event.amount, event.currency)
-    if was_alerted and event and event.event_type.startswith("CUSTOMER.DISPUTE"):
-        state.pending_disputes = max(0, state.pending_disputes - 1)
 
     verdict.action_taken = "approved"
     verdict.explanation_for_merchant = "Validated by you — transaction unlocked."
     return {"status": "approved", "capture": capture, "merchant_state": state.model_dump(mode="json")}
 
 
-@app.post("/ally/dismiss/{suggestion_id}")
+@app.post("/shield/acknowledge/{transaction_id}", dependencies=[Depends(require_admin)])
+async def acknowledge_shield(transaction_id: str):
+    """Le marchand prend en compte une alerte sans capture (refus, litige, paiement bloqué)."""
+    verdict = next(
+        (v for v in reversed(shield_verdicts)
+         if v.transaction_id == transaction_id and v.action_taken in ("alerted", "blocked") and not v.acknowledged),
+        None,
+    )
+    if verdict is None:
+        raise HTTPException(status_code=404, detail="Alerte introuvable ou déjà prise en compte")
+    verdict.acknowledged = True  # action_taken reste inchangé : ce n'est pas une approbation
+    event = next((e for e in reversed(transaction_history) if e.transaction_id == transaction_id), None)
+    if verdict.action_taken == "alerted" and event and event.event_type.startswith("CUSTOMER.DISPUTE"):
+        state = get_merchant_state()
+        state.pending_disputes = max(0, state.pending_disputes - 1)
+    return {"status": "acknowledged"}
+
+
+@app.post("/ally/dismiss/{suggestion_id}", dependencies=[Depends(require_admin)])
 async def dismiss_ally(suggestion_id: str):
     for i, s in enumerate(ally_suggestions):
         if s.suggestion_id == suggestion_id:

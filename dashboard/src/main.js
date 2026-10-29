@@ -13,8 +13,21 @@ document.getElementById("modal-overlay").onclick = (e) => { if (e.target.id === 
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") document.getElementById("modal-overlay").style.display = "none"; });
 
 // ─── Actions (Resolve / Dismiss) ───
+// Routes protégées par ADMIN_TOKEN sur la démo hébergée : on le demande une fois par session.
+async function adminPost(url) {
+    const send = () => fetch(url, {
+        method: "POST",
+        headers: sessionStorage.getItem("adminToken") ? { "X-Admin-Token": sessionStorage.getItem("adminToken") } : {},
+    });
+    let r = await send();
+    if (r.status === 401) {
+        const t = prompt("Cette action modifie l'état de la démo : token admin requis.");
+        if (t) { sessionStorage.setItem("adminToken", t); r = await send(); }
+    }
+    return r;
+}
 async function approveShield(txId) {
-    const r = await fetch(`/shield/approve/${encodeURIComponent(txId)}`, { method: "POST" });
+    const r = await adminPost(`/shield/approve/${encodeURIComponent(txId)}`);
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
         const c = d.capture;
@@ -24,12 +37,17 @@ async function approveShield(txId) {
         }
     } else {
         const err = d.detail && d.detail.issue ? `${d.detail.issue} — ${d.detail.message}` : JSON.stringify(d.detail || d);
-        showModal("Capture refusée par PayPal", err);
+        showModal(r.status === 401 ? "Action non autorisée" : "Capture impossible", err);
     }
     await refresh();
 }
+async function acknowledgeShield(txId) {
+    const r = await adminPost(`/shield/acknowledge/${encodeURIComponent(txId)}`);
+    if (!r.ok) showModal(r.status === 401 ? "Action non autorisée" : "Erreur", JSON.stringify((await r.json().catch(() => ({}))).detail || ""));
+    await refresh();
+}
 async function dismissAlly(sugId) {
-    await fetch(`/ally/dismiss/${encodeURIComponent(sugId)}`, { method: "POST" });
+    await adminPost(`/ally/dismiss/${encodeURIComponent(sugId)}`);
     await refresh();
 }
 
@@ -53,9 +71,15 @@ function shieldCard(v) {
     const lvl = v.threat_level || "low";
     shieldById[v.transaction_id] = v;
     let actions = "";
-    if (v.action_taken === "held" || v.action_taken === "alerted") {
+    if (v.action_taken === "held") {
+        // Autorisation retenue : le marchand peut la capturer
         actions = `<div class="card-actions">
             <button class="btn-approve" data-act="approve" data-id="${esc(v.transaction_id)}">✓ Unlock and validate</button>
+        </div>`;
+    } else if (v.action_taken === "alerted" || v.action_taken === "blocked") {
+        // Rien à capturer (refus PayPal, litige, autorisation annulée) : on acquitte seulement
+        actions = `<div class="card-actions">
+            <button class="btn-dismiss" data-act="ack" data-id="${esc(v.transaction_id)}">✓ Acknowledge</button>
         </div>`;
     }
     return `
@@ -83,7 +107,7 @@ function allyCard(s) {
         </div>
         <div class="fc-title">${esc(s.title)}</div>
         <div class="fc-desc">${esc(s.description)}</div>
-        <div class="fc-action">→ ${esc(s.action)} · ~${s.estimated_impact_eur} €</div>
+        <div class="fc-action">→ ${esc(s.action)} · impact estimé ≈ ${s.estimated_impact_eur} € (heuristique)</div>
         <div class="card-actions">
             <button class="btn-dismiss" data-act="dismiss" data-id="${esc(s.suggestion_id)}">✓ Mark as read</button>
         </div>
@@ -96,6 +120,7 @@ document.addEventListener("click", (e) => {
     if (btn) {
         e.stopPropagation();
         if (btn.dataset.act === "approve") approveShield(btn.dataset.id);
+        if (btn.dataset.act === "ack") acknowledgeShield(btn.dataset.id);
         if (btn.dataset.act === "dismiss") dismissAlly(btn.dataset.id);
         return;
     }
@@ -106,7 +131,7 @@ document.addEventListener("click", (e) => {
         if (v) showModal(`Shield — ${v.transaction_id}`, v.explanation_for_merchant || v.reason);
     } else if (card.dataset.kind === "ally") {
         const s = allyById[card.dataset.id];
-        if (s) showModal(`Ally — ${s.title}`, `${s.description}\n\nAction : ${s.action}\nImpact estimé : ${s.estimated_impact_eur} €`);
+        if (s) showModal(`Ally — ${s.title}`, `${s.description}\n\nAction : ${s.action}\nImpact estimé (heuristique, non observé) : ${s.estimated_impact_eur} €`);
     }
 });
 
@@ -128,7 +153,7 @@ const allyApi = agGrid.createGrid(document.getElementById("allyGrid"), { ...grid
     { field: "suggestion_type", headerName: "Type", width: 190 },
     { field: "title", headerName: "Title", flex: 1 },
     { field: "description", headerName: "Description", flex: 2 },
-    { field: "estimated_impact_eur", headerName: "Impact €", width: 100 },
+    { field: "estimated_impact_eur", headerName: "Impact estimé €", width: 130 },
     { field: "action", headerName: "Action", width: 200 },
 ], rowData: [], onCellClicked: (e) => { if (e.value) showModal(e.colDef.headerName, String(e.value)); } });
 
@@ -142,7 +167,7 @@ async function refresh() {
             fetch("/health").then(r => r.json()),
             fetch("/merchant/state").then(r => r.json()),
         ]);
-        document.getElementById("kpi-protected").textContent = `${Math.round(m.money_saved_by_shield).toLocaleString("fr-FR")} €`;
+        document.getElementById("kpi-protected").textContent = `${Math.round(m.amount_held_or_blocked ?? m.money_saved_by_shield).toLocaleString("fr-FR")} €`;
         document.getElementById("kpi-alerts").textContent = m.active_alerts;
         document.getElementById("kpi-transactions").textContent = m.transactions_analyzed;
         document.getElementById("kpi-ally").textContent = m.ally_opportunities;
@@ -153,7 +178,7 @@ async function refresh() {
 
         const vj = JSON.stringify(v), sj = JSON.stringify(s);
         if (vj !== lastV) {
-            const shieldActive = v.filter(x => x.action_taken !== "approved");
+            const shieldActive = v.filter(x => x.action_taken !== "approved" && !x.acknowledged);
             document.getElementById("shield-feed").innerHTML = shieldActive.length ? shieldActive.map(shieldCard).join("") : '<div class="empty-state">Aucune alerte — tout est calme 🟢</div>';
             shieldApi.setGridOption("rowData", v); lastV = vj;
         }

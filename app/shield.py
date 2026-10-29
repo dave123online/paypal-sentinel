@@ -29,6 +29,12 @@ def _decide(event: TransactionEvent) -> dict:
             "threat_level": "medium", "risk_score": 70, "action_taken": "alerted",
             "confidence": 0.85, "reason": "Dispute claims item not received but tracking shows delivered.",
         }
+    # Scénario 1b — Rafale automatisée de tests de carte : on libère les fonds de l'acheteur (void)
+    if int(p.get("recent_micro_payments", 0) or 0) >= 15 and event.amount >= 300:
+        return {
+            "threat_level": "critical", "risk_score": 97, "action_taken": "blocked",
+            "confidence": 0.95, "reason": "Automated burst of test payments before a high amount: authorization voided.",
+        }
     # Scénario 1 — Velocity attack
     if int(p.get("recent_micro_payments", 0) or 0) >= 6 and event.amount >= 300:
         return {
@@ -57,7 +63,7 @@ async def analyze_transaction(
     explanation = await ai_engine.explain_shield({
         "transaction": {
             "event_type": event.event_type, "amount": event.amount,
-            "currency": event.currency, "buyer_email": event.buyer_email,
+            "currency": event.currency,   # pas d'e-mail acheteur : inutile pour expliquer la décision
         },
         "merchant_state": {
             "monthly_revenue": merchant_state.monthly_revenue,

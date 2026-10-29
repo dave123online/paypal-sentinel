@@ -1,4 +1,5 @@
 """Ally : CFO virtuel basé sur l'historique réel. Totalement découplé de Shield."""
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -75,6 +76,18 @@ def analyze_history(history: list[TransactionEvent], now: Optional[datetime] = N
         "churn_candidates": churn[:3],
         "upsell_candidates": upsell[:3],
     }
+
+
+def _pseudo(email: str) -> str:
+    """Identifiant stable et non réversible envoyé à Gemini à la place de l'e-mail."""
+    return "Customer-" + hashlib.sha256(f"sentinel:{email.lower()}".encode()).hexdigest()[:6]
+
+
+def _restore(text: str, names: dict[str, str]) -> str:
+    """Remet le prénom local (dérivé de l'e-mail, jamais envoyé) à la place du pseudonyme."""
+    for pseudo, name in names.items():
+        text = text.replace(pseudo, name)
+    return text
 
 
 def _already(existing: list[str], buyer: str) -> bool:
@@ -158,6 +171,20 @@ async def generate_suggestion(
     # Référence temporelle = l'événement courant (identique à 'maintenant' en live, correct en rejeu)
     analytics = analyze_history(history, now=_utc(event.timestamp))
 
+    # Pseudonymisation : Gemini ne reçoit jamais d'e-mail acheteur ni de prénom déduit.
+    emails = {h.buyer_email for h in history if h.buyer_email}
+    if event.buyer_email:
+        emails.add(event.buyer_email)
+    names = {_pseudo(e): _short_name(e) for e in emails}   # pseudo -> prénom local
+
+    def _anon_candidates(cands: list[dict]) -> list[dict]:
+        return [{**c, "buyer": _pseudo(c["buyer"])} for c in cands]
+
+    def _anon_text(text: str) -> str:
+        for pseudo, name in names.items():
+            text = text.replace(name, pseudo)
+        return text
+
     payload = {
         # Aucune donnée de fraude ici : Ally est découplé de Shield.
         "merchant_state": {
@@ -169,12 +196,12 @@ async def generate_suggestion(
             {
                 "date": h.timestamp.strftime("%Y-%m-%d %H:%M"),
                 "amount": h.amount,
-                "buyer": h.buyer_email or "guest",
+                "buyer": _pseudo(h.buyer_email) if h.buyer_email else "guest",
                 "status": "success" if h.event_type in SALE_TYPES else "other",
             }
             for h in history[-30:]
         ],
-        "current_event": {"amount": event.amount, "buyer": event.buyer_email},
+        "current_event": {"amount": event.amount, "buyer": _pseudo(event.buyer_email) if event.buyer_email else "guest"},
         "cash_flow_status": {
             "days_since_last_sale": analytics["days_since_last_sale"],
             "unpaid_invoices_count": merchant_state.unpaid_invoices_count,
@@ -182,10 +209,10 @@ async def generate_suggestion(
         },
         "analytics": {
             "average_order_value": analytics["average_order_value"],
-            "churn_candidates": analytics["churn_candidates"],
-            "upsell_candidates": analytics["upsell_candidates"],
+            "churn_candidates": _anon_candidates(analytics["churn_candidates"]),
+            "upsell_candidates": _anon_candidates(analytics["upsell_candidates"]),
         },
-        "already_suggested": existing[-10:],
+        "already_suggested": [_anon_text(t) for t in existing[-10:]],
     }
 
     data = await ai_engine.suggest_ally(payload) or {}
@@ -196,12 +223,13 @@ async def generate_suggestion(
         stype = fb["suggestion_type"]
         data = {}  # type incohérent : on ignore tout le texte Gemini
 
+    # Le texte de Gemini parle de "Customer-ab12cd" : on remet le prénom localement.
     return AllySuggestion(
         merchant_id=merchant_state.merchant_id,
         suggestion_type=stype,
-        title=str(data.get("title") or fb["title"]),
-        description=str(data.get("description") or fb["description"]),
+        title=_restore(str(data.get("title") or fb["title"]), names),
+        description=_restore(str(data.get("description") or fb["description"]), names),
         estimated_impact_eur=_impact(stype, merchant_state, analytics, event),
-        action=str(data.get("action") or fb["action"]),
+        action=_restore(str(data.get("action") or fb["action"]), names),
         requires_approval=True,
     )

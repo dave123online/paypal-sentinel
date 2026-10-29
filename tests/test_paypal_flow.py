@@ -170,3 +170,82 @@ def test_webhook_flow_honors_decline_given_at_creation(env):
     r = c.post("/webhooks/paypal", json=wh).json()
     assert r["paypal"]["status"] == "DECLINED"
     assert r["verdict"]["action_taken"] == "alerted"
+
+
+# ─── Revue avant soumission ────────────────────────────────────────────────────
+
+def test_declined_payment_can_only_be_acknowledged(env):
+    c, fake = env
+    c.post(f"/paypal/orders/{_order(c, 80)}/authorize", json={"mock": "INSTRUMENT_DECLINED"})
+    tid = "DENIED_ORD1"
+    assert c.post(f"/shield/approve/{tid}").status_code == 409          # rien à capturer
+    assert m.shield_verdicts[-1].action_taken == "alerted"             # pas devenu "approved"
+    assert not fake.captured()
+    assert c.get("/merchant/state").json()["active_alerts"] == 1
+    assert c.post(f"/shield/acknowledge/{tid}").status_code == 200
+    assert m.shield_verdicts[-1].action_taken == "alerted" and m.shield_verdicts[-1].acknowledged
+    assert c.get("/merchant/state").json()["active_alerts"] == 0
+    assert c.post(f"/shield/acknowledge/{tid}").status_code == 404      # déjà pris en compte
+
+
+def test_burst_is_blocked_and_authorization_voided(env):
+    c, fake = env
+    r = c.post(f"/paypal/orders/{_order(c, 500)}/authorize", json={"signals": {"recent_micro_payments": 20}}).json()
+    assert r["verdict"]["action_taken"] == "blocked" and r["paypal"]["status"] == "VOIDED"
+    assert any(call[1].endswith("/void") for call in fake.calls) and not fake.captured()
+    assert c.post("/shield/approve/AUTH1").status_code == 409           # une autorisation annulée ne se débloque pas
+    assert c.post("/shield/acknowledge/AUTH1").status_code == 200
+    assert c.get("/merchant/state").json()["amount_held_or_blocked"] == 500  # le montant reste compté
+
+
+def test_protected_routes_need_admin_token(env, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "admin_token", "s3cret")
+    c, _ = env
+    evt = {"event_type": "PAYMENT.CAPTURE.COMPLETED", "transaction_id": "X1", "amount": 10}
+    for path, body in [("/simulate/transaction", evt), ("/simulate/stress", {}), ("/paypal/orders", {"amount": 5}),
+                       ("/shield/approve/X", None), ("/shield/acknowledge/X", None), ("/ally/dismiss/X", None)]:
+        assert c.post(path, json=body).status_code == 401, path
+        assert c.post(path, json=body, headers={"X-Admin-Token": "wrong"}).status_code == 401, path
+    assert c.post("/simulate/transaction", json=evt, headers={"X-Admin-Token": "s3cret"}).status_code == 200
+    # sans PAYPAL_WEBHOOK_ID (pas de signature à vérifier), le webhook demande aussi le token
+    assert c.post("/webhooks/paypal", json={"id": "W", "event_type": "PAYMENT.CAPTURE.COMPLETED"}).status_code == 401
+    # lecture seule et santé restent publics (démo accessible aux juges)
+    assert c.get("/shield/verdicts").status_code == 200 and c.get("/merchant/state").status_code == 200
+
+
+def test_no_buyer_email_sent_to_gemini(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from app import ai_engine, ally
+    from app.models import MerchantState, TransactionEvent
+    from app.shield import analyze_transaction
+
+    sent = {}
+
+    async def fake_ally(payload):
+        sent["ally"] = payload
+        cand = payload["analytics"]["churn_candidates"][0]["buyer"]
+        return {"suggestion_type": "customer_retention", "title": f"Win back {cand}",
+                "description": f"{cand} went silent.", "action": f"Email {cand}"}
+
+    async def fake_shield(payload):
+        sent["shield"] = payload
+        return "ok"
+
+    monkeypatch.setattr(ai_engine, "suggest_ally", fake_ally)
+    monkeypatch.setattr(ai_engine, "explain_shield", fake_shield)
+    now = datetime.now(timezone.utc)
+    hist = [TransactionEvent(event_type="PAYMENT.CAPTURE.COMPLETED", transaction_id=f"T{i}", amount=100,
+                             buyer_email="bob.martin@example.com", timestamp=now - timedelta(days=40 - 3 * i))
+            for i in range(5)]
+    ev = TransactionEvent(event_type="PAYMENT.CAPTURE.COMPLETED", transaction_id="T9", amount=20,
+                          buyer_email="carol@example.com")
+    s = asyncio.run(ally.generate_suggestion(ev, MerchantState(merchant_id="t"), hist))
+    assert "@" not in str(sent["ally"]) and "bob" not in str(sent["ally"]).lower()
+    assert "Bob" in s.title and "Customer-" not in s.title + s.description + s.action  # prénom remis localement
+
+    risky = TransactionEvent(event_type="PAYMENT.CAPTURE.COMPLETED", transaction_id="R1", amount=500,
+                             buyer_email="secret@example.com", raw_payload={"recent_micro_payments": 8})
+    asyncio.run(analyze_transaction(risky, MerchantState(merchant_id="t")))
+    assert "secret@example.com" not in str(sent["shield"])

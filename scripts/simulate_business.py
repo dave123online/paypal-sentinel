@@ -2,6 +2,10 @@
 import json
 import time
 import httpx
+import os as _os
+
+# Si la démo est protégée par ADMIN_TOKEN : export SENTINEL_ADMIN_TOKEN=...
+ADMIN_HEADERS = {"X-Admin-Token": _os.getenv("SENTINEL_ADMIN_TOKEN", "")} if _os.getenv("SENTINEL_ADMIN_TOKEN") else {}
 from datetime import datetime, timedelta
 
 import os
@@ -55,7 +59,7 @@ def main():
     print("🚀 Envoi de l'historique business à Sentinel...")
     history = generate_history()
     
-    with httpx.Client(timeout=60) as client:
+    with httpx.Client(timeout=60, headers=ADMIN_HEADERS) as client:
         for evt in history:
             # On envoie via l'endpoint de simulation
             # Note: Le serveur va recalculer le timestamp, mais c'est ok pour la démo

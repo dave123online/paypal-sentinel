@@ -12,5 +12,6 @@ python scripts/simulate_attack.py
 sleep 2
 echo "3/3 Crise de trésorerie (Ally : mode survie)"
 curl -s -X POST "$URL/simulate/stress" -H "Content-Type: application/json" \
+  -H "X-Admin-Token: ${SENTINEL_ADMIN_TOKEN:-}" \
   -d '{"unpaid_invoices": 3, "unpaid_amount": 2400}' | python -m json.tool
 echo "Dashboard: $URL/dashboard"
