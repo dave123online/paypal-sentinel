@@ -39,7 +39,7 @@ cp .env.example .env   # puis remplir les clés
 ```bash
 uvicorn app.main:app --reload
 ```
-- API : http://127.0.0.1:8000 · Docs : /docs · Dashboard : /dashboard
+- API : http://paypal-sentinel.onrender.com · Docs : /docs · Dashboard : /dashboard
 
 ## Démo complète
 ```bash
