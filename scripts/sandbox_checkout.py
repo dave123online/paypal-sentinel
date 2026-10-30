@@ -50,12 +50,72 @@ def main() -> int:
         if args.block:
             body["signals"] = {"recent_micro_payments": 20}
 
+        try:   # verdicts déjà présents : sert à repérer le nouveau après l'approbation
+            known = {(v["timestamp"], v["transaction_id"]) for v in c.get("/shield/verdicts").json()}
+        except (httpx.HTTPError, ValueError):
+            known = set()
         r = c.post("/paypal/orders", json=body)
         
         if r.status_code == 401:
             print("Token admin requis par ce serveur. Définis-le puis relance :")
             print("  export SENTINEL_ADMIN_TOKEN=<valeur de ADMIN_TOKEN sur Render>")
             return 1
+        if r.status_code != 200:
+            show(f"Création refusée (HTTP {r.status_code})", r.json())
+            return 0 if args.dup_invoice else 1
+        
+        order = r.json()
+        show("Order créé (intent=AUTHORIZE)", order)
+        
+        print(f"\n1) Ouvre ce lien et connecte-toi avec ton compte Sandbox PERSONAL (buyer) :")
+        print(f"   {order['approve_url']}")
+        print("2) Approuve le paiement, puis reviens ici.")
+        print("   (Si un webhook CHECKOUT.ORDER.APPROVED est configuré, Sentinel traite déjà l'order tout seul.)")
+        
+        payload: dict = {}
+        if args.decline:
+            payload["mock"] = "INSTRUMENT_DECLINED"
+        if args.hold:
+            payload["signals"] = {"recent_micro_payments": 8}
+        
+        while True:
+            input("\nAppuie sur Entrée une fois le paiement approuvé… ")
+            
+            r = c.post(f"/paypal/orders/{order['order_id']}/authorize", json=payload)
+            
+            if r.status_code == 409:
+                print("PayPal indique que l'order n'est pas encore approuvé. Approuve-le puis réessaie.")
+                continue
+            break
+        
+        if r.status_code == 404:
+            # Le webhook a déjà pris l'order en charge. Son traitement (Shield + Gemini) peut durer
+            # plusieurs secondes : on attend l'apparition d'un nouveau verdict au lieu de dormir 1 s.
+            print("Order déjà pris en charge par le webhook. En attente du verdict…")
+            new = None
+            for _ in range(40):
+                time.sleep(1)
+                try:
+                    current = c.get("/shield/verdicts").json()
+                except (httpx.HTTPError, ValueError):
+                    continue
+                fresh = [v for v in current if (v["timestamp"], v["transaction_id"]) not in known]
+                if fresh:
+                    new = fresh[0]
+                    break
+            if new is None:
+                print("Aucun nouveau verdict après 40 s. Regarde les logs Render (POST /webhooks/paypal) :")
+                print("webhook non livré, erreur de traitement ou service redémarré (stockage en mémoire).")
+                return 1
+            show("Verdict Shield (via webhook)", new)
+            print(f"\nAuthorization ID : {new['transaction_id']}")
+            if new["action_taken"] == "held":
+                print("Fonds retenus (autorisation non capturée). Clique sur « Unlock and validate » pour capturer réellement.")
+            else:
+                print("Vérifie l'activité sur https://www.sandbox.paypal.com/business/")
+            print(f"\nDashboard : {BASE_URL}/dashboard")
+            return 0
+
         if r.status_code != 200:
             show(f"Création refusée (HTTP {r.status_code})", r.json())
             return 0 if args.dup_invoice else 1

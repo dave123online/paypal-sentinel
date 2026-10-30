@@ -249,3 +249,21 @@ def test_no_buyer_email_sent_to_gemini(monkeypatch):
                              buyer_email="secret@example.com", raw_payload={"recent_micro_payments": 8})
     asyncio.run(analyze_transaction(risky, MerchantState(merchant_id="t")))
     assert "secret@example.com" not in str(sent["shield"])
+
+
+def test_network_error_during_authorize_keeps_the_order(env):
+    import httpx
+    c, fake = env
+    oid = _order(c, 49.9)
+    original = fake.__call__
+
+    async def flaky(method, path, **kw):
+        if path.endswith("/authorize"):
+            raise httpx.ConnectTimeout("boom")
+        return await original(method, path, **kw)
+
+    pc._request = flaky  # le fixture monkeypatch restaure l'original à la fin du test
+    assert c.post(f"/paypal/orders/{oid}/authorize").status_code == 502
+    assert oid in m.pending_orders and oid not in m.handled_order_ids
+    pc._request = fake
+    assert c.post(f"/paypal/orders/{oid}/authorize").status_code == 200

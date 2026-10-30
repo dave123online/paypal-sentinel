@@ -1,5 +1,7 @@
 import asyncio
 import logging
+
+import httpx
 import time
 from pathlib import Path
 from typing import Optional
@@ -257,6 +259,10 @@ async def authorize_and_analyze(order_id: str, mock: Optional[str] = None, signa
 
     try:
         auth = await paypal_client.authorize_order(order_id, mock=mock)
+    except httpx.HTTPError as e:  # réseau / timeout vers PayPal : on garde l'order, PayPal renverra le webhook
+        pending_orders[order_id] = order
+        handled_order_ids.discard(order_id)
+        raise HTTPException(status_code=502, detail=f"PayPal injoignable : {e.__class__.__name__}")
     except PayPalError as e:
         if e.status != 422 or e.issue == "ORDER_NOT_APPROVED":
             pending_orders[order_id] = order  # l'acheteur n'a pas encore approuvé : on peut réessayer
