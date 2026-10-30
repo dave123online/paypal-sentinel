@@ -26,8 +26,9 @@ def main() -> int:
     ap.add_argument("--decline", action="store_true", help="force INSTRUMENT_DECLINED")
     ap.add_argument("--dup-invoice", action="store_true", help="force DUPLICATE_INVOICE_ID")
     args = ap.parse_args()
-    if args.block and args.amount < 300:
-        args.amount = 500.0  # la règle de blocage exige un montant >= 300 €
+    if (args.block or args.hold) and args.amount < 300:
+        args.amount = 500.0  # les règles hold/block de Shield exigent un montant >= 300 €
+        print("(montant relevé à 500 : Shield ne retient / ne bloque qu'à partir de 300)")
 
     with httpx.Client(base_url=BASE_URL, timeout=60, headers=ADMIN_HEADERS) as c:
         invoice = f"SENTINEL-{uuid.uuid4().hex[:8]}"
