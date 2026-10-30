@@ -51,8 +51,12 @@ def main() -> int:
 
         r = c.post("/paypal/orders", json=body)
         
+        if r.status_code == 401:
+            print("Token admin requis par ce serveur. Définis-le puis relance :")
+            print("  export SENTINEL_ADMIN_TOKEN=<valeur de ADMIN_TOKEN sur Render>")
+            return 1
         if r.status_code != 200:
-            show(f"Création refusée par PayPal (HTTP {r.status_code})", r.json())
+            show(f"Création refusée (HTTP {r.status_code})", r.json())
             return 0 if args.dup_invoice else 1
         
         order = r.json()
