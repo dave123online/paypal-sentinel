@@ -1,104 +1,87 @@
 # 🛡️ PayPal Sentinel
 
-**Démo en ligne :** https://paypal-sentinel.onrender.com (dashboard : `/dashboard`, docs API : `/docs`) · PayPal **Sandbox**, aucun argent réel.
+**An AI protection and growth agent for small PayPal merchants.** Shield holds risky payments with deterministic rules, Gemini explains each decision in plain, reassuring language, and Ally acts as a virtual CFO that finds revenue opportunities and cash-flow risks.
 
-Agent IA de protection et de croissance pour marchands PayPal : **Shield** détecte la fraude avec des règles déterministes, **Gemini** l'explique avec empathie, **Ally** propose la prochaine action business.
+**Live demo:** https://paypal-sentinel.onrender.com (dashboard at `/dashboard`, API docs at `/docs`). PayPal **Sandbox** only, no real money.
 
-## Problème résolu
-Les petits marchands subissent fraude par cartes test, faux litiges (friendly fraud) et anomalies de factures, sans outil clair ni rassurant. Sentinel retient la transaction, explique pourquoi en langage humain et laisse le marchand décider.
+## The problem
+Small merchants face card-testing attacks, friendly fraud (false "item not received" disputes) and suspicious invoices, plus the daily stress of lost customers and unpaid invoices. Existing tools are opaque black boxes. Sentinel holds a risky payment, explains why, and leaves the final decision to the merchant.
 
-## Vision
-- **Shield** (protection, transparence, contrôle) : règles déterministes (velocity attack, friendly fraud, anomalie de facture). Gemini ne décide jamais : il explique avec empathie. Une transaction normale n'appelle pas Gemini et n'apparaît pas dans le feed. Chaque alerte a un bouton **Unlock and validate** (le marchand a le dernier mot : capture PayPal Sandbox réelle quand l'autorisation vient d'un vrai order, simulée pour les transactions de démo).
-- **Ally** (CFO virtuel, découplé de Shield, jamais de fraude) : analyse les 30 dernières transactions. Quatre compétences : rétention/churn, upsell, survie de trésorerie (dry spell), factures impayées/opérationnel. Throttlé (une analyse toutes les 3 transactions) et dédupliqué. Bouton **Mark as read**.
-- **Command Center** : KPI (argent protégé, alertes actives, transactions analysées, opportunités Ally), feeds Shield/Ally, tables AG Grid avec modales, statut Gemini (cache 60 s).
+## What it does
+- **Shield (protection, transparency, control).** Deterministic rules decide; Gemini never does. Four outcomes, all tested:
+  - `approved`: normal payment, captured automatically.
+  - `held`: 6+ micro-payments followed by an amount of 300 EUR or more, or an invoice above 2.5x the average sent to a new payee. The PayPal authorization is kept open, not captured. The merchant clicks **Unlock and validate** to trigger a real capture.
+  - `alerted`: PayPal declined the payment, or a dispute claims "not received" while tracking says delivered. Nothing to capture; the merchant acknowledges.
+  - `blocked`: an automated burst of 15+ test payments before a large amount. The authorization is voided.
+- **Ally (growth, decoupled from Shield, never talks about fraud).** Analyzes the last 30 transactions: churn of loyal customers, upsell trends, cash-flow "dry spells", unpaid invoices. Throttled (one analysis every 3 transactions) and de-duplicated. Each card has a **Mark as read** button.
+- **Command Center dashboard.** KPI cards, Shield and Ally feeds, AG Grid tables with a **Source** column (PayPal Sandbox / PayPal Webhook / Simulated), and live status dots for Gemini and PayPal.
 
-## Architecture
+## How it uses PayPal (Sandbox)
+Real flow with `intent=AUTHORIZE`, driven by webhooks:
+
 ```
-Webhook PayPal / simulation
-        │
-        ▼
-   FastAPI ── asyncio.gather ──┬─► Shield (règles) ──► Gemini (explication empathique)
-                               └─► Ally (historique + analytics) ──► Gemini (suggestion)
-                                          │
-                              stockage mémoire ──► Dashboard (KPI + feeds + AG Grid)
+POST /paypal/orders ──► buyer approves (Sandbox Personal account)
+                                 │  webhook CHECKOUT.ORDER.APPROVED
+                                 ▼
+                    authorize order ──► Shield decides
+       approved ─► real capture      held ─► authorization kept, "Unlock" = real capture
+       blocked  ─► real void         PayPal decline ─► Shield alert
 ```
-Gemini ne décide jamais du blocage : seul Shield décide.
+- **Orders v2** (create, authorize), **Payments v2** (capture, void), **OAuth2** client credentials.
+- **Webhooks** with signature verification (`verify-webhook-signature`): `CHECKOUT.ORDER.APPROVED`, `PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `CUSTOMER.DISPUTE.CREATED`, `INVOICING.INVOICE.PAID`. Duplicate deliveries and events already processed through the API are ignored.
+- **Negative testing** with the `PayPal-Mock-Response` header (`INSTRUMENT_DECLINED`, `DUPLICATE_INVOICE_ID`), handled by Shield.
+- Code: `app/paypal_client.py`, `app/webhooks/handlers.py`, `app/main.py`.
 
-## Outils
-PayPal API (Sandbox) · Google Gemini (AI Studio) · FastAPI · AG Grid · Render
+## How it uses AI (Google Gemini)
+`app/ai_engine.py` calls Gemini (JSON output) for two things only: (1) rewriting a Shield decision as a short empathetic message to the merchant, (2) writing the Ally business suggestion from deterministic analytics. Amounts, types and decisions are computed and validated server-side. Gemini receives no buyer e-mail and no first name: customers are replaced by a non-reversible identifier (`Customer-xxxxxx`) and the name is restored locally for display. Without `GOOGLE_API_KEY` or if a call fails, deterministic fallbacks keep everything working.
 
-## Installation
+## Tools
+| Tool | How it is used |
+|---|---|
+| PayPal Sandbox APIs | Orders, authorization, capture, void, webhooks, negative testing |
+| Google Gemini (AI Studio) | Empathetic explanations (Shield) and business suggestions (Ally) |
+| FastAPI | API, webhook receiver, orchestration (`asyncio.gather` runs Shield and Ally in parallel) |
+| AG Grid | Verdict and suggestion tables in the dashboard |
+| Render | Hosting of the live demo |
+
+## Run locally
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # puis remplir les clés
-```
-
-## Lancer
-```bash
+cp .env.example .env     # fill in the keys
 uvicorn app.main:app --reload
 ```
-- API : http://paypal-sentinel.onrender.com · Docs : /docs · Dashboard : /dashboard
+Dashboard: http://127.0.0.1:8000/dashboard · Docs: http://127.0.0.1:8000/docs
 
-## Démo complète
+Full simulated demo (no PayPal keys needed):
 ```bash
-bash scripts/demo.sh        # trafic normal -> attaques -> crise de trésorerie
-# ou séparément :
-python scripts/simulate_business.py   # Ally : churn de Bob, upsell d'Alice
-python scripts/simulate_attack.py     # Shield : 3 scénarios de fraude
-curl -X POST localhost:8000/simulate/stress -H "Content-Type: application/json" \
-  -d '{"unpaid_invoices": 3, "unpaid_amount": 2400}'   # Ally : mode survie
+bash scripts/demo.sh                  # normal traffic -> attacks -> cash-flow crisis
 pytest
 ```
-Sans `GOOGLE_API_KEY`, des fallbacks déterministes sont utilisés : la démo fonctionne quand même.
+Real Sandbox demo (needs Sandbox Client ID/Secret and a Personal + Business Sandbox account):
+```bash
+python scripts/sandbox_checkout.py                       # normal payment, captured automatically
+python scripts/sandbox_checkout.py --hold --amount 500   # Shield holds; Unlock = real capture
+python scripts/sandbox_checkout.py --decline             # INSTRUMENT_DECLINED -> alert
+python scripts/sandbox_checkout.py --block               # test-payment burst -> blocked, authorization voided
+python scripts/sandbox_checkout.py --dup-invoice         # DUPLICATE_INVOICE_ID
+```
+Check the result in the Business account activity on sandbox.paypal.com. For local webhooks use `ngrok http 8000` and register `/webhooks/paypal` in PayPal Developer (`PAYPAL_WEBHOOK_ID`).
+
+## Using the hosted demo
+The dashboard is public and read-only. Actions that change state (simulation, order creation, Unlock, Acknowledge, Mark as read) require an admin token, provided to judges in the submission's testing instructions. In scripts: `export SENTINEL_ADMIN_TOKEN=...`.
 
 ## Endpoints
-`GET /health` · `GET /merchant/state` · `POST /paypal/orders` · `POST /paypal/orders/{id}/authorize` · `POST /simulate/transaction` · `POST /simulate/stress` · `POST /webhooks/paypal` · `GET /shield/verdicts` · `POST /shield/approve/{tx}` · `GET /ally/suggestions` · `POST /ally/dismiss/{id}` · `GET /dashboard`
+`GET /health` · `GET /merchant/state` · `POST /paypal/orders` · `POST /paypal/orders/{id}/authorize` · `POST /webhooks/paypal` · `POST /simulate/transaction` · `POST /simulate/stress` · `GET /shield/verdicts` · `POST /shield/approve/{tx}` · `POST /shield/acknowledge/{tx}` · `GET /ally/suggestions` · `POST /ally/dismiss/{id}` · `GET /dashboard`
 
-## Intégration PayPal (Sandbox)
-Flux réel, `intent=AUTHORIZE` : Sentinel réserve les fonds, Shield décide, puis capture ou retient.
+## Deploy on Render
+- Build: `bash build.sh` (or `pip install -r requirements.txt`) · Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Environment: `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENVIRONMENT=sandbox`, `PAYPAL_WEBHOOK_ID`, `GOOGLE_API_KEY`, `GOOGLE_MODEL`, `APP_BASE_URL` (public Render URL, used as PayPal `return_url`), `ADMIN_TOKEN` (ASCII characters only).
 
-```
-POST /paypal/orders ──► buyer approuve (compte Sandbox Personal)
-        │                         │ webhook CHECKOUT.ORDER.APPROVED (ou appel manuel)
-        ▼                         ▼
-   order créé            POST /paypal/orders/{id}/authorize ──► Shield
-                                                                │
-              approved ─► capture réelle   held ─► autorisation gardée, bouton "Unlock" = capture réelle
-              blocked  ─► void             refus PayPal ─► alerte Shield
-```
-- `app/paypal_client.py` : OAuth2, Orders v2 (create/authorize), Payments v2 (capture/void), vérification de signature webhook, `check_credentials` (pastille PayPal du dashboard).
-- **Negative testing** : en-tête `PayPal-Mock-Response` (`INSTRUMENT_DECLINED`, `DUPLICATE_INVOICE_ID`), traité par Shield.
-- Les webhooks de capture déjà traitées via l'API sont ignorés (pas de double comptage).
-- Webhooks : `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `CHECKOUT.ORDER.APPROVED`, `CUSTOMER.DISPUTE.CREATED`, `INVOICING.INVOICE.PAID`. Test local : `ngrok http 8000`, URL à enregistrer dans PayPal Developer (`PAYPAL_WEBHOOK_ID`).
-- Les signaux de risque que PayPal ne fournit pas (micro-paiements, tracking) sont simulés via `signals` (sandbox uniquement) ou `sentinel_signals` (webhook).
+## Limitations (please read before judging)
+- **Some risk signals are simulated.** PayPal does not provide `recent_micro_payments`, `tracking_delivered` or `average_invoice_amount`. Sentinel demonstrates a decision architecture that can use such signals; in the demo they come from scenarios (`tests/scenarios`) or from `signals` (Sandbox only). The Source badges show what is real.
+- **KPIs are not measured losses.** "Amount held / blocked" is the sum of held or blocked payments (exposure handled, not proven losses avoided). Ally's "estimated impact" is a heuristic.
+- **Demo-grade deployment.** In-memory storage (a server restart clears state), a single merchant, no user authentication. Admin actions are protected by one shared token. Not for production use with real merchants.
 
-### Démo sandbox réelle
-Prérequis : Client ID/Secret Sandbox dans `.env`, serveur lancé, un compte Sandbox **Personal** (buyer) et un **Business** (seller).
-```bash
-python scripts/sandbox_checkout.py                      # paiement normal -> capturé automatiquement
-python scripts/sandbox_checkout.py --amount 500 --hold  # Shield retient -> "Unlock" = vraie capture
-python scripts/sandbox_checkout.py --decline            # INSTRUMENT_DECLINED -> alerte Shield
-python scripts/sandbox_checkout.py --block              # rafale de tests de carte -> blocked, autorisation annulée (void)
-python scripts/sandbox_checkout.py --dup-invoice        # DUPLICATE_INVOICE_ID
-```
-Vérifie ensuite le paiement dans l'activité du compte Business sur www.sandbox.paypal.com.
-
-## Intégration IA
-`app/ai_engine.py` appelle Gemini (`GOOGLE_MODEL`, sortie JSON) pour (1) reformuler la décision Shield en message empathique, (2) rédiger la suggestion Ally. Les montants et types sont validés côté serveur.
-
-## Déploiement Render
-- Build : `pip install -r requirements.txt`
-- Start : `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Variables : `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ENVIRONMENT`, `PAYPAL_WEBHOOK_ID`, `GOOGLE_API_KEY`, `GOOGLE_MODEL`, `APP_BASE_URL` (URL publique Render, utilisée comme `return_url` PayPal)
-
-## Limites et choix de conception (à lire avant de juger)
-- **Signaux de risque simulés.** PayPal ne fournit pas `recent_micro_payments`, `tracking_delivered` ni `average_invoice_amount`. Sentinel démontre une architecture de décision qui *peut* exploiter ces signaux ; en démo ils viennent des scénarios (`tests/scenarios`) ou de `signals` (sandbox uniquement). Les badges « PayPal Sandbox / Webhook / Simulé » montrent ce qui est réel.
-- **Quatre états Shield, tous testés :** `approved` (capture), `held` (autorisation gardée, le marchand peut capturer), `alerted` (refus PayPal ou litige : rien à capturer, le marchand acquitte), `blocked` (rafale de 15+ micro-paiements avant un montant ≥ 300 € : l'autorisation est annulée par void et ne peut plus être débloquée).
-- **KPI « Montant retenu / bloqué ».** Somme des montants des transactions retenues ou bloquées : c'est l'exposition traitée, pas une perte évitée mesurée. Même logique pour « impact estimé » d'Ally : heuristique (valeur de panier, factures impayées), jamais un résultat observé.
-- **Sécurité de la démo hébergée.** Définir `ADMIN_TOKEN` protège les routes qui modifient l'état (`/simulate/*`, `/paypal/orders*`, validations, et le webhook quand `PAYPAL_WEBHOOK_ID` est vide). Le dashboard (lecture) reste public ; les boutons demandent le token une fois par session. Les scripts le lisent dans `SENTINEL_ADMIN_TOKEN`. Les webhooks PayPal sont protégés par la vérification de signature. Version de démonstration : stockage en mémoire, un seul marchand, pas d'authentification utilisateur. Ne pas la déployer telle quelle pour de vrais marchands.
-- **Données envoyées à l'IA.** Gemini ne reçoit ni e-mail acheteur ni prénom : les clients sont remplacés par un identifiant dérivé non réversible (`Customer-xxxxxx`), remis en prénom localement dans l'interface. Seuls les montants, dates et statuts nécessaires à la recommandation sont transmis.
-
-## Licence
-MIT — voir `LICENSE`.
+## License
+MIT, see `LICENSE`. This is an independent hackathon project, not affiliated with or endorsed by PayPal.
