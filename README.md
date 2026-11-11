@@ -4,6 +4,8 @@
 
 **Live demo:** https://paypal-sentinel.onrender.com (dashboard at `/dashboard`, API docs at `/docs`). PayPal **Sandbox** only, no real money.
 
+**Demo video:** https://youtu.be/Mrys1RFJr3Y?si=pp3aSpTvM04Cn-cV
+
 ## The problem
 Small merchants face card-testing attacks, friendly fraud (false "item not received" disputes) and suspicious invoices, plus the daily stress of lost customers and unpaid invoices. Existing tools are opaque black boxes. Sentinel holds a risky payment, explains why, and leaves the final decision to the merchant.
 
@@ -56,6 +58,7 @@ Dashboard: http://127.0.0.1:8000/dashboard · Docs: http://127.0.0.1:8000/docs
 Full simulated demo (no PayPal keys needed):
 ```bash
 bash scripts/demo.sh                  # normal traffic -> attacks -> cash-flow crisis
+bash scripts/crisis.sh                # only the cash-flow crisis (3 unpaid invoices)
 pytest
 ```
 Real Sandbox demo (needs Sandbox Client ID/Secret and a Personal + Business Sandbox account):
@@ -69,7 +72,14 @@ python scripts/sandbox_checkout.py --dup-invoice         # DUPLICATE_INVOICE_ID
 Check the result in the Business account activity on sandbox.paypal.com. For local webhooks use `ngrok http 8000` and register `/webhooks/paypal` in PayPal Developer (`PAYPAL_WEBHOOK_ID`).
 
 ## Using the hosted demo
-The dashboard is public and read-only. Actions that change state (simulation, order creation, Unlock, Acknowledge, Mark as read) require an admin token, provided to judges in the submission's testing instructions. In scripts: `export SENTINEL_ADMIN_TOKEN=...`.
+The dashboard is public and read-only. Actions that change state (simulation, order creation, Unlock, Acknowledge, Mark as read) require an admin token, provided to judges in the submission's testing instructions. In the browser, buttons ask for it once per session; in `/docs`, enter it in the `x-admin-token` header of the protected routes; in scripts: `export SENTINEL_ADMIN_TOKEN=...`.
+
+Quick test without any PayPal account (simulated data), from `/docs`:
+1. `POST /simulate/transaction` with `{"event_type":"PAYMENT.CAPTURE.COMPLETED","transaction_id":"TX_TEST_1","amount":500,"currency":"EUR","buyer_email":"test@example.com","raw_payload":{"recent_micro_payments":8}}`: Shield holds it (source: Simulated).
+2. Click **Unlock and validate** on the dashboard.
+3. `POST /simulate/stress` with `{"unpaid_invoices":3,"unpaid_amount":2400}`: Ally switches to cash-flow survival mode.
+
+The full real-Sandbox flow (order, buyer approval, webhook, hold, real capture) is shown in the demo video and reproducible with `scripts/sandbox_checkout.py` (see above). The free Render plan may take 30-60 s to wake up, and state is in memory, so the dashboard is empty after a restart until a scenario runs.
 
 ## Endpoints
 `GET /health` · `GET /merchant/state` · `POST /paypal/orders` · `POST /paypal/orders/{id}/authorize` · `POST /webhooks/paypal` · `POST /simulate/transaction` · `POST /simulate/stress` · `GET /shield/verdicts` · `POST /shield/approve/{tx}` · `POST /shield/acknowledge/{tx}` · `GET /ally/suggestions` · `POST /ally/dismiss/{id}` · `GET /dashboard`
